@@ -316,7 +316,7 @@ func (s *sendStream) popNewStreamFrameWithoutBuffer(f *wire.StreamFrame, maxByte
 
 func (s *sendStream) maybeGetRetransmission(maxBytes protocol.ByteCount, v protocol.VersionNumber) (*wire.StreamFrame, bool /* has more retransmissions */) {
 	f := s.retransmissionQueue[0]
-	newFrame, needsSplit := f.MaybeSplitOffFrame(maxBytes, v)
+	newFrame, needsSplit := f.MaybeSplitOffFrame(maxBytes, v) // 前半截在new中，后半截在f中
 	if needsSplit {
 		return newFrame, true
 	}

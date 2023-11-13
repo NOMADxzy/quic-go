@@ -1,12 +1,17 @@
 package congestion
 
 import (
+	"context"
 	"fmt"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"log"
 	"time"
 
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/utils"
 	"github.com/quic-go/quic-go/logging"
+	"github.com/quic-go/quic-go/rpcClient"
 )
 
 const (
@@ -17,6 +22,7 @@ const (
 	renoBeta                   = 0.7 // Reno backoff factor.
 	minCongestionWindowPackets = 2
 	initialCongestionWindow    = 32
+	greedyFactor               = 10
 )
 
 type cubicSender struct {
@@ -25,6 +31,9 @@ type cubicSender struct {
 	cubic           *Cubic
 	pacer           *pacer
 	clock           Clock
+
+	rl       bool
+	rlClient rpcClient.AcerServiceClient
 
 	reno bool
 
@@ -94,6 +103,7 @@ func newCubicSender(
 ) *cubicSender {
 	c := &cubicSender{
 		rttStats:                   rttStats,
+		rl:                         true,
 		largestSentPacketNumber:    protocol.InvalidPacketNumber,
 		largestAckedPacketNumber:   protocol.InvalidPacketNumber,
 		largestSentAtLastCutback:   protocol.InvalidPacketNumber,
@@ -106,6 +116,16 @@ func newCubicSender(
 		reno:                       reno,
 		tracer:                     tracer,
 		maxDatagramSize:            initialMaxDatagramSize,
+	}
+	if c.rl {
+		conn, err := grpc.Dial("[::]:50053", grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			log.Fatal("连接失败", err)
+		} else {
+			// 创建客户端
+			rlClient := rpcClient.NewAcerServiceClient(conn)
+			c.rlClient = rlClient
+		}
 	}
 	c.pacer = newPacer(c.BandwidthEstimate)
 	if c.tracer != nil && c.tracer.UpdatedCongestionState != nil {
@@ -177,12 +197,43 @@ func (c *cubicSender) OnPacketAcked(
 	ackedBytes protocol.ByteCount,
 	priorInFlight protocol.ByteCount,
 	eventTime time.Time,
+	lostCnt int32,
 ) {
 	c.largestAckedPacketNumber = utils.Max(ackedPacketNumber, c.largestAckedPacketNumber)
 	if c.InRecovery() {
 		return
 	}
-	c.maybeIncreaseCwnd(ackedPacketNumber, ackedBytes, priorInFlight, eventTime)
+
+	if c.rl {
+		state := []float32{float32(c.largestAckedPacketNumber - c.largestSentAtLastCutback), float32(c.congestionWindow) / float32(c.maxCongestionWindow()), float32(priorInFlight) / float32(c.congestionWindow),
+			float32(c.pacer.budgetAtLastSent / c.pacer.maxBurstSize()),
+			float32(c.rttStats.LatestRTT()) / float32(c.rttStats.MinRTT()+1),
+			float32(c.rttStats.SmoothedRTT() / (c.rttStats.MinRTT() + 1)), float32(c.rttStats.MaxAckDelay() / (c.rttStats.MinRTT() + 1)), float32(c.rttStats.MeanDeviation() / (c.rttStats.MinRTT() + 1))}
+		resp, err := c.rlClient.GetExplorationAction(context.Background(), &rpcClient.StateReward{State: state,
+			Reward: float32(greedyFactor*c.congestionWindow)/float32(c.maxCongestionWindow()) - float32(lostCnt)})
+
+		if lostCnt > 0 {
+			fmt.Println("发生丢包，数量:", lostCnt)
+		}
+		if err == nil {
+			if resp.Action > -1 {
+				if resp.Action < -0.2 || resp.Action < 0 && c.congestionWindow < 2*c.maxDatagramSize {
+					return
+				}
+				preCwnd := c.congestionWindow
+				c.congestionWindow = protocol.ByteCount(float64(c.congestionWindow) * float64(1+resp.Action))
+				c.congestionWindow = utils.Min(c.congestionWindow, c.maxCongestionWindow())
+				log.Printf("increase cwnd from %d to %d \n", preCwnd, c.congestionWindow)
+			}
+
+			return
+		}
+		log.Fatal("GRPC method error", err)
+	} else {
+		preCwnd := c.congestionWindow
+		c.maybeIncreaseCwnd(ackedPacketNumber, ackedBytes, priorInFlight, eventTime, lostCnt)
+		fmt.Printf("(origin Algo)increase cwnd from %d to %d \n", preCwnd, c.congestionWindow)
+	}
 	if c.InSlowStart() {
 		c.hybridSlowStart.OnPacketAcked(ackedPacketNumber)
 	}
@@ -219,6 +270,7 @@ func (c *cubicSender) maybeIncreaseCwnd(
 	ackedBytes protocol.ByteCount,
 	priorInFlight protocol.ByteCount,
 	eventTime time.Time,
+	lostCnt int32,
 ) {
 	// Do not increase the congestion window unless the sender is close to using
 	// the current window.
@@ -227,6 +279,7 @@ func (c *cubicSender) maybeIncreaseCwnd(
 		c.maybeTraceStateChange(logging.CongestionStateApplicationLimited)
 		return
 	}
+
 	if c.congestionWindow >= c.maxCongestionWindow() {
 		return
 	}
@@ -252,6 +305,7 @@ func (c *cubicSender) maybeIncreaseCwnd(
 
 func (c *cubicSender) isCwndLimited(bytesInFlight protocol.ByteCount) bool {
 	congestionWindow := c.GetCongestionWindow()
+	//fmt.Println("bytesInFlight:", bytesInFlight, "congestionWindow:", congestionWindow)
 	if bytesInFlight >= congestionWindow {
 		return true
 	}

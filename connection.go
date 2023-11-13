@@ -1848,7 +1848,7 @@ func (s *connection) sendPackets(now time.Time) error {
 	if isBlocked, offset := s.connFlowController.IsNewlyBlocked(); isBlocked {
 		s.framer.QueueControlFrame(&wire.DataBlockedFrame{MaximumData: offset})
 	}
-	s.windowUpdateQueue.QueueAll()
+	s.windowUpdateQueue.QueueAll() // 告知发送方rwnd，将当前接收窗口通过MAX_DATA_FRAME的方式通知发送发
 	if cf := s.cryptoStreamManager.GetPostHandshakeData(protocol.MaxPostHandshakeCryptoFrameSize); cf != nil {
 		s.queueControlFrame(cf)
 	}

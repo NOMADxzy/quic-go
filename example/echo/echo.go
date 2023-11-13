@@ -7,27 +7,29 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
-	"fmt"
 	"io"
 	"log"
 	"math/big"
+	"time"
 
 	"github.com/quic-go/quic-go"
 )
 
-const addr = "localhost:4242"
+// const addr = "10.129.67.10:4242"
+const addr = "0.0.0.0:4242"
 
-const message = "foobar"
+var message = "foobar"
 
 // We start a server echoing data on the first stream the client opens,
 // then connect with a client, send the message, and wait for its receipt.
 func main() {
-	go func() { log.Fatal(echoServer()) }()
+	//go func() { log.Fatal(echoServer()) }()
+	log.Fatal(echoServer())
 
-	err := clientMain()
-	if err != nil {
-		panic(err)
-	}
+	//err := clientMain()
+	//if err != nil {
+	//	panic(err)
+	//}
 }
 
 // Start a server that echos all data on the first stream opened by the client
@@ -64,18 +66,23 @@ func clientMain() error {
 		return err
 	}
 
-	fmt.Printf("Client: Sending '%s'\n", message)
-	_, err = stream.Write([]byte(message))
-	if err != nil {
-		return err
+	for {
+		time.Sleep(time.Millisecond * 50)
+		//fmt.Printf("Client: Sending '%s'\n", message)
+		_, err = stream.Write([]byte(message))
+		if err != nil {
+			return err
+		}
+		buf := make([]byte, len(message))
+		_, err = io.ReadFull(stream, buf)
+		if err != nil {
+			return err
+		}
+		//fmt.Printf("Client: Got '%s'\n", buf)
+		if len(message) < 10000 {
+			message += "____________________________________________________________________________________________________"
+		}
 	}
-
-	buf := make([]byte, len(message))
-	_, err = io.ReadFull(stream, buf)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("Client: Got '%s'\n", buf)
 
 	return nil
 }
@@ -84,7 +91,7 @@ func clientMain() error {
 type loggingWriter struct{ io.Writer }
 
 func (w loggingWriter) Write(b []byte) (int, error) {
-	fmt.Printf("Server: Got '%s'\n", string(b))
+	//fmt.Printf("Server: Got '%s'\n", string(b))
 	return w.Writer.Write(b)
 }
 

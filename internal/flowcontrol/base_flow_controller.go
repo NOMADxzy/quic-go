@@ -72,7 +72,7 @@ func (c *baseFlowController) addBytesRead(n protocol.ByteCount) {
 	c.bytesRead += n
 }
 
-func (c *baseFlowController) hasWindowUpdate() bool {
+func (c *baseFlowController) hasWindowUpdate() bool { // 应用层读取占比超过了WindowUpdateThreshold就会返回true
 	bytesRemaining := c.receiveWindow - c.bytesRead
 	// update the window when more than the threshold was consumed
 	return bytesRemaining <= protocol.ByteCount(float64(c.receiveWindowSize)*(1-protocol.WindowUpdateThreshold))
