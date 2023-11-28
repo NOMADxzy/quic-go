@@ -24,6 +24,8 @@ import (
 	"github.com/quic-go/quic-go/logging"
 )
 
+const MetricInterval = time.Second / 10
+
 type unpacker interface {
 	UnpackLongHeader(hdr *wire.Header, rcvTime time.Time, data []byte, v protocol.VersionNumber) (*unpackedPacket, error)
 	UnpackShortHeader(rcvTime time.Time, data []byte) (protocol.PacketNumber, protocol.PacketNumberLen, protocol.KeyPhaseBit, []byte, error)
@@ -207,9 +209,10 @@ type connection struct {
 	connStateMutex sync.Mutex
 	connState      ConnectionState
 
-	logID  string
-	tracer *logging.ConnectionTracer
-	logger utils.Logger
+	logID   string
+	tracer  *logging.ConnectionTracer
+	logger  utils.Logger
+	Metrics *utils.Metrics
 }
 
 var (
@@ -248,6 +251,7 @@ var newConnection = func(
 		tracer:              tracer,
 		logger:              logger,
 		version:             v,
+		Metrics:             utils.NewMetrics(MetricInterval),
 	}
 	if origDestConnID.Len() > 0 {
 		s.logID = origDestConnID.String()
@@ -362,6 +366,7 @@ var newClientConnection = func(
 		tracer:              tracer,
 		versionNegotiated:   hasNegotiatedVersion,
 		version:             v,
+		Metrics:             utils.NewMetrics(MetricInterval),
 	}
 	s.connIDManager = newConnIDManager(
 		destConnID,
@@ -1503,7 +1508,7 @@ func (s *connection) handleHandshakeDoneFrame() error {
 }
 
 func (s *connection) handleAckFrame(frame *wire.AckFrame, encLevel protocol.EncryptionLevel) error {
-	acked1RTTPacket, err := s.sentPacketHandler.ReceivedAck(frame, encLevel, s.lastPacketReceivedTime)
+	acked1RTTPacket, err := s.sentPacketHandler.ReceivedAck(frame, encLevel, s.lastPacketReceivedTime, s.Metrics)
 	if err != nil {
 		return err
 	}
@@ -1825,6 +1830,15 @@ func (s *connection) triggerSending() error {
 	}
 }
 
+func (s *connection) udpSend(buf *packetBuffer, gsoSize uint16, ecn protocol.ECN) {
+	s.sendQueue.Send(buf, gsoSize, ecn)
+	if s.Metrics != nil {
+		s.Metrics.SentBytes += buf.Len()
+		s.Metrics.Sent += 1
+	}
+
+}
+
 func (s *connection) sendPackets(now time.Time) error {
 	// Path MTU Discovery
 	// Can't use GSO, since we need to send a single packet that's larger than our current maximum size.
@@ -1839,7 +1853,7 @@ func (s *connection) sendPackets(now time.Time) error {
 		ecn := s.sentPacketHandler.ECNMode(true)
 		s.logShortHeaderPacket(p.DestConnID, p.Ack, p.Frames, p.StreamFrames, p.PacketNumber, p.PacketNumberLen, p.KeyPhase, ecn, buf.Len(), false)
 		s.registerPackedShortHeaderPacket(p, ecn, now)
-		s.sendQueue.Send(buf, 0, ecn)
+		s.udpSend(buf, 0, ecn)
 		// This is kind of a hack. We need to trigger sending again somehow.
 		s.pacingDeadline = deadlineSendImmediately
 		return nil
@@ -1889,7 +1903,7 @@ func (s *connection) sendPacketsWithoutGSO(now time.Time) error {
 			return err
 		}
 
-		s.sendQueue.Send(buf, 0, ecn)
+		s.udpSend(buf, 0, ecn)
 
 		if s.sendQueue.WouldBlock() {
 			return nil
@@ -1951,7 +1965,7 @@ func (s *connection) sendPacketsWithGSO(now time.Time) error {
 			continue
 		}
 
-		s.sendQueue.Send(buf, uint16(maxSize), ecn)
+		s.udpSend(buf, uint16(maxSize), ecn)
 
 		if dontSendMore {
 			return nil
@@ -2001,7 +2015,7 @@ func (s *connection) maybeSendAckOnlyPacket(now time.Time) error {
 	}
 	s.logShortHeaderPacket(p.DestConnID, p.Ack, p.Frames, p.StreamFrames, p.PacketNumber, p.PacketNumberLen, p.KeyPhase, ecn, buf.Len(), false)
 	s.registerPackedShortHeaderPacket(p, ecn, now)
-	s.sendQueue.Send(buf, 0, ecn)
+	s.udpSend(buf, 0, ecn)
 	return nil
 }
 
@@ -2093,7 +2107,7 @@ func (s *connection) sendPackedCoalescedPacket(packet *coalescedPacket, ecn prot
 		s.sentPacketHandler.SentPacket(now, p.PacketNumber, largestAcked, p.StreamFrames, p.Frames, protocol.Encryption1RTT, ecn, p.Length, p.IsPathMTUProbePacket)
 	}
 	s.connIDManager.SentPacket()
-	s.sendQueue.Send(packet.buffer, 0, ecn)
+	s.udpSend(packet.buffer, 0, ecn)
 	return nil
 }
 

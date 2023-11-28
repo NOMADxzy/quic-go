@@ -18,11 +18,11 @@ const (
 // RTTStats provides round-trip statistics
 type RTTStats struct {
 	hasMeasurement bool
-
-	minRTT        time.Duration
-	latestRTT     time.Duration
-	smoothedRTT   time.Duration
-	meanDeviation time.Duration
+	bestRTT        time.Duration
+	minRTT         time.Duration
+	latestRTT      time.Duration
+	smoothedRTT    time.Duration
+	meanDeviation  time.Duration
 
 	maxAckDelay time.Duration
 }
@@ -35,6 +35,8 @@ func NewRTTStats() *RTTStats {
 // MinRTT Returns the minRTT for the entire connection.
 // May return Zero if no valid updates have occurred.
 func (r *RTTStats) MinRTT() time.Duration { return r.minRTT }
+
+func (r *RTTStats) BestRTT() time.Duration { return r.bestRTT }
 
 // LatestRTT returns the most recent rtt measurement.
 // May return Zero if no valid updates have occurred.
@@ -74,6 +76,9 @@ func (r *RTTStats) UpdateRTT(sendDelta, ackDelay time.Duration, now time.Time) {
 	// r.minRTT.
 	if r.minRTT == 0 || r.minRTT > sendDelta {
 		r.minRTT = sendDelta
+		if r.bestRTT == 0 || r.bestRTT > sendDelta {
+			r.bestRTT = sendDelta
+		}
 	}
 
 	// Correct for ackDelay if information received from the peer results in a

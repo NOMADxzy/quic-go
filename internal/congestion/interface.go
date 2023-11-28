@@ -1,6 +1,7 @@
 package congestion
 
 import (
+	"github.com/quic-go/quic-go/internal/utils"
 	"time"
 
 	"github.com/quic-go/quic-go/internal/protocol"
@@ -13,7 +14,7 @@ type SendAlgorithm interface {
 	OnPacketSent(sentTime time.Time, bytesInFlight protocol.ByteCount, packetNumber protocol.PacketNumber, bytes protocol.ByteCount, isRetransmittable bool)
 	CanSend(bytesInFlight protocol.ByteCount) bool
 	MaybeExitSlowStart()
-	OnPacketAcked(number protocol.PacketNumber, ackedBytes protocol.ByteCount, priorInFlight protocol.ByteCount, eventTime time.Time, lostCnt int32)
+	OnPacketAcked(number protocol.PacketNumber, ackedBytes protocol.ByteCount, priorInFlight protocol.ByteCount, eventTime time.Time, metrics *utils.Metrics)
 	OnCongestionEvent(number protocol.PacketNumber, lostBytes protocol.ByteCount, priorInFlight protocol.ByteCount)
 	OnRetransmissionTimeout(packetsRetransmitted bool)
 	SetMaxDatagramSize(protocol.ByteCount)

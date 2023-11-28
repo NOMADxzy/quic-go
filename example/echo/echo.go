@@ -8,15 +8,15 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"io"
-	"log"
 	"math/big"
 	"time"
 
 	"github.com/quic-go/quic-go"
 )
 
-// const addr = "10.129.67.10:4242"
-const addr = "0.0.0.0:4242"
+const addr = "10.29.16.146:4242"
+
+//const addr = "0.0.0.0:4242"
 
 var message = "foobar"
 
@@ -24,12 +24,12 @@ var message = "foobar"
 // then connect with a client, send the message, and wait for its receipt.
 func main() {
 	//go func() { log.Fatal(echoServer()) }()
-	log.Fatal(echoServer())
+	//log.Fatal(echoServer())
 
-	//err := clientMain()
-	//if err != nil {
-	//	panic(err)
-	//}
+	err := clientMain()
+	if err != nil {
+		panic(err)
+	}
 }
 
 // Start a server that echos all data on the first stream opened by the client
@@ -67,7 +67,7 @@ func clientMain() error {
 	}
 
 	for {
-		time.Sleep(time.Millisecond * 50)
+		time.Sleep(time.Millisecond * 5)
 		//fmt.Printf("Client: Sending '%s'\n", message)
 		_, err = stream.Write([]byte(message))
 		if err != nil {
@@ -78,8 +78,7 @@ func clientMain() error {
 		if err != nil {
 			return err
 		}
-		//fmt.Printf("Client: Got '%s'\n", buf)
-		if len(message) < 10000 {
+		if len(message) < 100000 {
 			message += "____________________________________________________________________________________________________"
 		}
 	}

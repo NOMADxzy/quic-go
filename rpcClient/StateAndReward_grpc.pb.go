@@ -23,6 +23,7 @@ const _ = grpc.SupportPackageIsVersion7
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type AcerServiceClient interface {
 	GetExplorationAction(ctx context.Context, in *StateReward, opts ...grpc.CallOption) (*Action, error)
+	UpdateMetric(ctx context.Context, in *Metric, opts ...grpc.CallOption) (*Res, error)
 }
 
 type acerServiceClient struct {
@@ -42,11 +43,21 @@ func (c *acerServiceClient) GetExplorationAction(ctx context.Context, in *StateR
 	return out, nil
 }
 
+func (c *acerServiceClient) UpdateMetric(ctx context.Context, in *Metric, opts ...grpc.CallOption) (*Res, error) {
+	out := new(Res)
+	err := c.cc.Invoke(ctx, "/service.acerService/UpdateMetric", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AcerServiceServer is the server API for AcerService service.
 // All implementations must embed UnimplementedAcerServiceServer
 // for forward compatibility
 type AcerServiceServer interface {
 	GetExplorationAction(context.Context, *StateReward) (*Action, error)
+	UpdateMetric(context.Context, *Metric) (*Res, error)
 	mustEmbedUnimplementedAcerServiceServer()
 }
 
@@ -56,6 +67,9 @@ type UnimplementedAcerServiceServer struct {
 
 func (UnimplementedAcerServiceServer) GetExplorationAction(context.Context, *StateReward) (*Action, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetExplorationAction not implemented")
+}
+func (UnimplementedAcerServiceServer) UpdateMetric(context.Context, *Metric) (*Res, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateMetric not implemented")
 }
 func (UnimplementedAcerServiceServer) mustEmbedUnimplementedAcerServiceServer() {}
 
@@ -88,6 +102,24 @@ func _AcerService_GetExplorationAction_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AcerService_UpdateMetric_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Metric)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AcerServiceServer).UpdateMetric(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/service.acerService/UpdateMetric",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AcerServiceServer).UpdateMetric(ctx, req.(*Metric))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AcerService_ServiceDesc is the grpc.ServiceDesc for AcerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -98,6 +130,10 @@ var AcerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetExplorationAction",
 			Handler:    _AcerService_GetExplorationAction_Handler,
+		},
+		{
+			MethodName: "UpdateMetric",
+			Handler:    _AcerService_UpdateMetric_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

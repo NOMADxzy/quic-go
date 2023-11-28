@@ -305,7 +305,7 @@ func (h *sentPacketHandler) getPacketNumberSpace(encLevel protocol.EncryptionLev
 	}
 }
 
-func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.EncryptionLevel, rcvTime time.Time) (bool /* contained 1-RTT packet */, error) {
+func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.EncryptionLevel, rcvTime time.Time, metrics *utils.Metrics) (bool /* contained 1-RTT packet */, error) {
 	pnSpace := h.getPacketNumberSpace(encLevel)
 
 	largestAcked := ack.LargestAcked()
@@ -356,14 +356,18 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 
 	pnSpace.largestAcked = utils.Max(pnSpace.largestAcked, largestAcked)
 
-	lostCnt, err := h.detectLostPackets(rcvTime, encLevel)
+	lostBytes, lostCnt, err := h.detectLostPackets(rcvTime, encLevel)
+	if lostCnt > 0 {
+		metrics.OnLost(lostBytes, lostCnt)
+	}
 	if err != nil {
 		return false, err
 	}
 	var acked1RTTPacket bool
 	for _, p := range ackedPackets {
 		if p.includedInBytesInFlight && !p.declaredLost {
-			h.congestion.OnPacketAcked(p.PacketNumber, p.Length, priorInFlight, rcvTime, int32(lostCnt))
+			metrics.OnAck()
+			h.congestion.OnPacketAcked(p.PacketNumber, p.Length, priorInFlight, rcvTime, metrics)
 		}
 		if p.EncryptionLevel == protocol.Encryption1RTT {
 			acked1RTTPacket = true
@@ -373,6 +377,10 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 	}
 	// After this point, we must not use ackedPackets any longer!
 	// We've already returned the buffers.
+	if metrics.ShouldReset() {
+		h.rttStats.OnConnectionMigration()
+		metrics.Reset()
+	}
 	ackedPackets = nil //nolint:ineffassign // This is just to be on the safe side.
 
 	// Reset the pto_count unless the client is unsure if the server has validated the client's address.
@@ -604,7 +612,7 @@ func (h *sentPacketHandler) setLossDetectionTimer() {
 	}
 }
 
-func (h *sentPacketHandler) detectLostPackets(now time.Time, encLevel protocol.EncryptionLevel) (int, error) {
+func (h *sentPacketHandler) detectLostPackets(now time.Time, encLevel protocol.EncryptionLevel) (protocol.ByteCount, int, error) {
 	pnSpace := h.getPacketNumberSpace(encLevel)
 	pnSpace.lossTime = time.Time{}
 
@@ -619,6 +627,7 @@ func (h *sentPacketHandler) detectLostPackets(now time.Time, encLevel protocol.E
 
 	priorInFlight := h.bytesInFlight
 	lostCnt := 0
+	var lostBytes protocol.ByteCount
 	err := pnSpace.history.Iterate(func(p *packet) (bool, error) {
 		if p.PacketNumber > pnSpace.largestAcked {
 			return false, nil
@@ -655,6 +664,7 @@ func (h *sentPacketHandler) detectLostPackets(now time.Time, encLevel protocol.E
 		}
 		if packetLost {
 			lostCnt++
+			lostBytes += p.Length
 			pnSpace.history.DeclareLost(p.PacketNumber)
 			if !p.skippedPacket {
 				// the bytes in flight need to be reduced no matter if the frames in this packet will be retransmitted
@@ -670,7 +680,7 @@ func (h *sentPacketHandler) detectLostPackets(now time.Time, encLevel protocol.E
 		}
 		return true, nil
 	})
-	return lostCnt, err
+	return lostBytes, lostCnt, err
 }
 
 func (h *sentPacketHandler) OnLossDetectionTimeout() error {
@@ -684,7 +694,7 @@ func (h *sentPacketHandler) OnLossDetectionTimeout() error {
 			h.tracer.LossTimerExpired(logging.TimerTypeACK, encLevel)
 		}
 		// Early retransmit or time loss detection
-		_, err := h.detectLostPackets(time.Now(), encLevel)
+		_, _, err := h.detectLostPackets(time.Now(), encLevel)
 		return err
 	}
 

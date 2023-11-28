@@ -10,9 +10,19 @@ message StateReward{
 }
 
 message Action{
-  float action = 1;
+  int32 action = 1;
+  int32 action_dim = 2;
+}
+
+message Metric{
+  repeated float metrics = 1;
+}
+
+message Res{
+  float r = 1;
 }
 
 service acerService{
   rpc GetExplorationAction(StateReward) returns(Action);
+  rpc UpdateMetric(Metric) returns(Res);
 }

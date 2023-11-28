@@ -22,7 +22,7 @@ const (
 	renoBeta                   = 0.7 // Reno backoff factor.
 	minCongestionWindowPackets = 2
 	initialCongestionWindow    = 32
-	greedyFactor               = 10
+	ActionThreshold            = 0.1
 )
 
 type cubicSender struct {
@@ -32,8 +32,9 @@ type cubicSender struct {
 	pacer           *pacer
 	clock           Clock
 
-	rl       bool
-	rlClient rpcClient.AcerServiceClient
+	rl        bool
+	rlClient  rpcClient.AcerServiceClient
+	preReward float32
 
 	reno bool
 
@@ -197,33 +198,76 @@ func (c *cubicSender) OnPacketAcked(
 	ackedBytes protocol.ByteCount,
 	priorInFlight protocol.ByteCount,
 	eventTime time.Time,
-	lostCnt int32,
+	metrics *utils.Metrics,
 ) {
 	c.largestAckedPacketNumber = utils.Max(ackedPacketNumber, c.largestAckedPacketNumber)
 	if c.InRecovery() {
 		return
 	}
+	//if metrics.ShouldReset() {
+	//	//dura := time.Now().Sub(metrics.StartTime)
+	//
+	//	//Reward := int64(10 * throughput / initialMaxDatagramSize) - int64(c.rttStats.SmoothedRTT() / time.Second) - int64(2000 * LossRate)
+	//	//fmt.Println("r1:", r1, "r2:", r2, "r3:", r3)
+	//}
 
 	if c.rl {
-		state := []float32{float32(c.largestAckedPacketNumber - c.largestSentAtLastCutback), float32(c.congestionWindow) / float32(c.maxCongestionWindow()), float32(priorInFlight) / float32(c.congestionWindow),
-			float32(c.pacer.budgetAtLastSent / c.pacer.maxBurstSize()),
-			float32(c.rttStats.LatestRTT()) / float32(c.rttStats.MinRTT()+1),
-			float32(c.rttStats.SmoothedRTT() / (c.rttStats.MinRTT() + 1)), float32(c.rttStats.MaxAckDelay() / (c.rttStats.MinRTT() + 1)), float32(c.rttStats.MeanDeviation() / (c.rttStats.MinRTT() + 1))}
-		resp, err := c.rlClient.GetExplorationAction(context.Background(), &rpcClient.StateReward{State: state,
-			Reward: float32(greedyFactor*c.congestionWindow)/float32(c.maxCongestionWindow()) - float32(lostCnt)})
-
-		if lostCnt > 0 {
-			fmt.Println("发生丢包，数量:", lostCnt)
+		if !metrics.ShouldReset() {
+			return
 		}
+		sendRate := metrics.Sent
+		//sendBytes := metrics.SentBytes
+		LossRate := float64(metrics.Lost) / float64(metrics.Sent)
+		AckRate := float64(metrics.Acked) / float64(metrics.Sent)
+		bestRTT := c.rttStats.BestRTT()
+		avgLatency := float32(c.rttStats.SmoothedRTT() / time.Millisecond)
+		throughput := metrics.SentBytes
+		fmt.Println("sendRate:", sendRate, "LossRate:", LossRate, "AckRate:", AckRate, "avgLatency:", avgLatency, "bestRTT:", bestRTT,
+			"throughput:", throughput, "congestionWindow:", c.congestionWindow, "priorInFlight", priorInFlight)
+		r1 := float32(throughput) / float32(initialMaxDatagramSize) / 10
+		r2 := -float32(c.rttStats.SmoothedRTT() / 10 / time.Millisecond)
+		r3 := -float32(LossRate)
+		r4 := -float32(c.congestionWindow-priorInFlight-maxBurstPackets*c.maxDatagramSize) / float32(initialMaxDatagramSize) / 100
+		s4 := -r4
+		if c.congestionWindow-priorInFlight-maxBurstPackets*c.maxDatagramSize < 0 {
+			r4 = -10
+		}
+		//s1 := float32(sendBytes / initialMaxDatagramSize)
+		//s2 := float32(priorInFlight / initialMaxDatagramSize)
+		//s3 := 100 * avgLatency
+		//s4 := float32(c.congestionWindow / initialMaxDatagramSize)
+		fmt.Println("r1:", r1, "r2:", r2, "r3:", r3, "r4:", r4)
+		reward := r1 + r4 + c.preReward
+		resp, err := c.rlClient.GetExplorationAction(context.Background(), &rpcClient.StateReward{State: []float32{s4},
+			Reward: reward})
+		_, err = c.rlClient.UpdateMetric(context.Background(), &rpcClient.Metric{Metrics: []float32{reward, avgLatency, float32(throughput / c.maxDatagramSize)}})
+		c.preReward = 0
+
+		//if lostCnt > 0 {
+		//	fmt.Println("发生丢包，数量:", lostCnt)
+		//}
 		if err == nil {
-			if resp.Action > -1 {
-				if resp.Action < -0.2 || resp.Action < 0 && c.congestionWindow < 2*c.maxDatagramSize {
-					return
-				}
+			act := float32(resp.Action-resp.ActionDim) / float32(resp.ActionDim)
+			if resp.Action >= -1 {
+
 				preCwnd := c.congestionWindow
-				c.congestionWindow = protocol.ByteCount(float64(c.congestionWindow) * float64(1+resp.Action))
+				if act >= 0 {
+					if c.congestionWindow == c.maxCongestionWindow() {
+						c.preReward = -5
+					} else {
+						c.congestionWindow = protocol.ByteCount(float64(c.congestionWindow) * float64(1+act))
+					}
+				} else {
+					if c.congestionWindow == minCongestionWindowPackets*initialMaxDatagramSize {
+						c.preReward = -5
+					} else {
+						c.congestionWindow = minCongestionWindowPackets*initialMaxDatagramSize + protocol.ByteCount(float64(c.congestionWindow-minCongestionWindowPackets*initialMaxDatagramSize)*float64(1+act))
+					}
+				}
 				c.congestionWindow = utils.Min(c.congestionWindow, c.maxCongestionWindow())
-				log.Printf("increase cwnd from %d to %d \n", preCwnd, c.congestionWindow)
+				log.Printf("action : %f, increase cwnd from %d to %d \n", act, preCwnd, c.congestionWindow)
+			} else {
+				fmt.Printf("rl action error, action: %f\n", resp.Action)
 			}
 
 			return
@@ -231,7 +275,15 @@ func (c *cubicSender) OnPacketAcked(
 		log.Fatal("GRPC method error", err)
 	} else {
 		preCwnd := c.congestionWindow
-		c.maybeIncreaseCwnd(ackedPacketNumber, ackedBytes, priorInFlight, eventTime, lostCnt)
+		LossRate := float64(metrics.Lost) / float64(metrics.Sent)
+
+		c.maybeIncreaseCwnd(ackedPacketNumber, ackedBytes, priorInFlight, eventTime)
+		r1 := float32(metrics.SentBytes / initialMaxDatagramSize)
+		r2 := -float32(c.rttStats.SmoothedRTT() / 10 / time.Millisecond)
+		r3 := -float32(2000 * LossRate)
+		r4 := -float32((c.congestionWindow - priorInFlight - maxBurstPackets*c.maxDatagramSize) / 10 / initialMaxDatagramSize)
+
+		fmt.Println("r1:", r1, "r2:", r2, "r3:", r3, "r4:", r4)
 		fmt.Printf("(origin Algo)increase cwnd from %d to %d \n", preCwnd, c.congestionWindow)
 	}
 	if c.InSlowStart() {
@@ -270,7 +322,6 @@ func (c *cubicSender) maybeIncreaseCwnd(
 	ackedBytes protocol.ByteCount,
 	priorInFlight protocol.ByteCount,
 	eventTime time.Time,
-	lostCnt int32,
 ) {
 	// Do not increase the congestion window unless the sender is close to using
 	// the current window.
